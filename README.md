@@ -43,7 +43,7 @@ ES modules need to be served over HTTP; opening `index.html` directly from disk 
 ## Tests
 
 ```bash
-node --test tests/
+node --test tests/*.test.js
 ```
 
 Requires Node 20+. Tests cover the scoring rules and the domain checker (with mocked network).
