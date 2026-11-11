@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Naam: Company Name Checker</title>
+  <meta name="description" content="Naam scores a company name on legal rules, trademark risk, pronunciation, industry fit, live domain availability, social handles and hidden meanings. Free, private, and runs in your browser.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https:; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14130f" media="(prefers-color-scheme: dark)">
+  <meta property="og:title" content="Naam: Company Name Checker">
+  <meta property="og:description" content="Score a company name before you commit: legal rules, trademarks, domains, handles and hidden meanings.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="./" aria-label="Naam home">
+        <span class="brand-mark" aria-hidden="true">न</span>
+        <span class="brand-word">Naam</span>
+      </a>
+      <p class="brand-note"><span lang="hi">नाम</span> · “name”</p>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <section class="intro">
+      <h1>Is your company name ready to&nbsp;register?</h1>
+      <p class="lede">Naam scores a name on legal and entity rules, trademark risk, pronunciation, industry fit, hidden meanings and handles, and checks domains live. Everything runs in your browser.</p>
+    </section>
+
+    <form id="form" class="card form" novalidate>
+      <div class="field field-name">
+        <label for="name">Company name</label>
+        <input id="name" name="n" type="text" autocomplete="off" autocapitalize="words" spellcheck="false" maxlength="120" placeholder="e.g. Zentrova Labs LLC" required>
+        <p class="hint">Include the suffix (LLC, Inc.…) if you've chosen one. We'll check it matches the entity type.</p>
+      </div>
+      <div class="grid-4">
+        <div class="field">
+          <label for="industry">Industry</label>
+          <select id="industry" name="i"></select>
+        </div>
+        <div class="field">
+          <label for="entity">Entity type</label>
+          <select id="entity" name="e"></select>
+        </div>
+        <div class="field">
+          <label for="state">Formation state</label>
+          <select id="state" name="s"></select>
+        </div>
+        <div class="field">
+          <label for="opState">Operating state <span class="opt">(if different)</span></label>
+          <select id="opState" name="o"></select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Check name</button>
+        <p class="examples">Try:
+          <button type="button" class="chip" data-example="Zentrova Labs|tech|ccorp|DE">Zentrova Labs</button>
+          <button type="button" class="chip" data-example="Experts Exchange|tech|llc|CA">Experts Exchange</button>
+          <button type="button" class="chip" data-example="First National Bank LLC|finance|llc|NY">First National Bank LLC</button>
+        </p>
+      </div>
+      <p id="form-error" class="form-error" role="alert" hidden></p>
+    </form>
+
+    <section id="results" class="results" aria-live="polite" hidden>
+      <div class="card summary">
+        <div class="score-wrap">
+          <svg class="ring" viewBox="0 0 120 120" role="img" aria-labelledby="score-label">
+            <circle class="ring-track" cx="60" cy="60" r="52"></circle>
+            <circle class="ring-value" cx="60" cy="60" r="52" pathLength="100" stroke-dasharray="0 100"></circle>
+          </svg>
+          <div class="score-text">
+            <span id="score" class="score-num">0</span>
+            <span class="score-of">/ 100</span>
+          </div>
+        </div>
+        <div class="summary-body">
+          <p id="score-label" class="grade"></p>
+          <p id="grade-summary" class="grade-summary"></p>
+          <dl class="facts">
+            <div><dt>Legal name</dt><dd id="legal-name"></dd></div>
+            <div><dt>How registries compare it</dt><dd><code id="registry-form"></code></dd></div>
+            <div><dt>Handle</dt><dd><code id="handle"></code></dd></div>
+          </dl>
+          <p id="partial" class="partial" hidden><span class="spinner" aria-hidden="true"></span> Checking domains… score will update.</p>
+          <div class="summary-actions">
+            <button type="button" id="share" class="btn btn-ghost">Copy shareable link</button>
+            <span id="share-status" class="share-status" role="status"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card breakdown">
+        <h2>Score breakdown</h2>
+        <ul id="bars" class="bars"></ul>
+      </div>
+
+      <div class="cols">
+        <div class="col">
+          <section class="card" aria-labelledby="dom-h">
+            <h2 id="dom-h">Domains <span class="badge badge-live">Live</span></h2>
+            <p class="card-note">Checked against the registry (RDAP), or DNS for extensions without RDAP. “Likely” means no DNS records exist; confirm with a registrar.</p>
+            <ul id="domains" class="domains"></ul>
+          </section>
+
+          <section class="card" aria-labelledby="reg-h">
+            <h2 id="reg-h">State registration <span class="badge">Guided</span></h2>
+            <div id="registration"></div>
+          </section>
+
+          <section class="card" aria-labelledby="tm-h">
+            <h2 id="tm-h">Trademarks <span class="badge">Guided</span></h2>
+            <p class="card-note">A state registration does not give you trademark rights. Search federal and international registers before you invest in a brand.</p>
+            <ul id="trademarks" class="link-list"></ul>
+          </section>
+
+          <section class="card" aria-labelledby="soc-h">
+            <h2 id="soc-h">Social handles <span class="badge">Guided</span></h2>
+            <p class="card-note">Platforms block automated lookups. Open each link: a “not found” page means the handle is probably free.</p>
+            <ul id="social" class="social"></ul>
+          </section>
+        </div>
+        <div class="col">
+          <div id="details"></div>
+        </div>
+      </div>
+
+      <section class="card next" aria-labelledby="next-h">
+        <h2 id="next-h">Before you file</h2>
+        <ol id="next-steps"></ol>
+      </section>
+    </section>
+
+    <section class="card about" aria-labelledby="about-h">
+      <h2 id="about-h">How Naam works</h2>
+      <div class="about-grid">
+        <div>
+          <h3>Live</h3>
+          <p>Domain availability is looked up directly from each registry's public RDAP server, falling back to DNS-over-HTTPS for extensions without RDAP.</p>
+        </div>
+        <div>
+          <h3>Guided</h3>
+          <p>State registries, the USPTO and social networks don't offer open lookups to websites, so Naam checks their rules and gives you one-click links to the official searches.</p>
+        </div>
+        <div>
+          <h3>Private</h3>
+          <p>No accounts, no tracking, no server. Your name idea only leaves your browser as domain lookups sent to registries and DNS resolvers.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>Naam is an informational tool, not legal advice. Rules vary by state and change over time. Confirm with the official registry, and consider an attorney for trademark clearance.</p>
+      <p><a href="https://github.com/p-aakash/naam">Source on GitHub</a> · MIT licensed</p>
+    </div>
+  </footer>
+</body>
+</html>
