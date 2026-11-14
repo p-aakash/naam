@@ -291,3 +291,33 @@ details.all-states summary { cursor: pointer; font-weight: 600; color: var(--acc
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Domain tabs & manual search */
+.tabs { display: flex; gap: 4px; margin: 14px 0 4px; padding: 4px; background: var(--surface-2); border-radius: 999px; width: 100%; }
+.tabs [role="tab"] {
+  flex: 1 1 0; min-width: 0; font: 600 .9rem/1.2 var(--font); color: var(--muted); background: transparent;
+  border: 0; border-radius: 999px; padding: 9px 10px; cursor: pointer; white-space: nowrap;
+}
+.tabs [role="tab"][aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+.tabs [role="tab"]:hover { color: var(--text); }
+[role="tabpanel"]:focus-visible { outline-offset: 4px; }
+.manual-form { margin-top: 14px; display: grid; gap: 6px; }
+.manual-form label { font-weight: 600; font-size: .9rem; }
+.manual-row { display: flex; gap: 8px; }
+.manual-row input { flex: 1 1 auto; font-family: var(--mono); font-size: .95rem; }
+.manual-row .btn { padding: 11px 18px; flex: 0 0 auto; }
+.btn[disabled] { opacity: .6; cursor: progress; }
+.manual-message { margin: 10px 0 8px; font-size: .9rem; color: var(--muted); min-height: 1.2em; }
+.manual-message[data-tone="error"] { color: var(--fail); font-weight: 500; }
+.domain-sub { display: block; font-size: .75rem; color: var(--muted); }
+.domain-notes { grid-column: 1 / -1; margin: 2px 0 0; padding: 0; list-style: none; font-size: .8rem; color: var(--muted); display: grid; gap: 2px; }
+.domain-notes .warn { color: var(--warn); }
+.domain-notes .err { color: var(--fail); }
+.status-invalid { background: var(--fail-soft); color: var(--fail); }
+.status-expiring { background: var(--warn-soft); color: var(--warn); }
+.verify { font-weight: 600; }
+.privacy { margin-top: 16px; padding: 14px 16px; border-radius: var(--radius-sm); background: var(--info-soft); }
+.privacy h3 { font-size: .98rem; }
+.privacy ul { margin: 8px 0 0; padding-left: 1.1rem; display: grid; gap: 6px; font-size: .86rem; color: var(--text); }
+.copy-toast { margin: 10px 0 0; font-size: .85rem; color: var(--pass); min-height: 1.2em; }
+.copy-toast:empty { margin: 0; min-height: 0; }

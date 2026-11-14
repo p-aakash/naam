@@ -1,7 +1,8 @@
 // Naam — UI wiring.
 import { ENTITY_TYPES, INDUSTRIES, STATES } from './data.js';
 import { analyzeName, scoreDomains, totalScore, grade, CATEGORY_LABELS } from './scoring.js';
-import { checkDomains, registrarLinks, loadBootstrap } from './domains.js';
+import { checkDomains, verifyLinks, loadBootstrap, loadTldList, tldExists, hasRdap } from './domains.js';
+import { parseDomainList, MAX_DOMAINS } from './domain-input.js';
 
 const $ = sel => document.querySelector(sel);
 const el = (tag, attrs = {}, ...children) => {
@@ -18,7 +19,7 @@ const el = (tag, attrs = {}, ...children) => {
   return node;
 };
 const ICON = { pass: '✓', warn: '!', fail: '✕', info: 'i' };
-const STATUS_TEXT = { available: 'Available', likely: 'Likely free', taken: 'Taken', unknown: 'Unknown', pending: 'Checking…' };
+const STATUS_TEXT = { available: 'Available', likely: 'Likely free', taken: 'Taken', unknown: 'Unknown', pending: 'Checking…', invalid: 'Invalid', expiring: 'Expiring' };
 const externalLink = (href, ...children) => el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, ...children);
 
 /* ------------------------------------------------------------------ */
@@ -148,17 +149,37 @@ function renderDetails(cats) {
   }));
 }
 
+// One result row, shared by the Suggestions and Search tabs.
+// opts.verifyAlways: show verification links for every finished result (manual search).
+function domainRow(r, { verifyAlways = false } = {}) {
+  const free = r.status === 'available' || r.status === 'likely';
+  const statusKey = r.status === 'taken' && r.expiring ? 'expiring' : r.status;
+  const done = !['pending', 'invalid'].includes(r.status);
+  const showVerify = done && (verifyAlways || free);
+  const source = r.source === 'RDAP' ? 'Registry (RDAP)' : r.source === 'DNS' ? 'DNS' : '';
+  const notes = [
+    ...(r.error ? [{ cls: 'err', text: r.error }] : []),
+    ...(r.warnings || []).map(text => ({ cls: 'warn', text })),
+    ...(r.notes || []).map(text => ({ cls: '', text })),
+  ];
+  return el('li', { class: 'domain', 'data-domain': r.domain || r.raw || '' },
+    el('span', { class: 'domain-name' }, r.display || r.domain || r.raw,
+      r.display && r.domain && r.display !== r.domain ? el('span', { class: 'domain-sub', text: r.domain }) : null),
+    el('span', { class: `status status-${statusKey}`, text: STATUS_TEXT[statusKey] || statusKey }),
+    (r.detail || showVerify || source)
+      ? el('span', { class: 'domain-meta' },
+        r.detail ? el('span', { text: r.detail }) : null,
+        done && source ? el('span', { text: `via ${source}` }) : null,
+        showVerify ? verifyLinks(r.domain, { rdap: r.rdap !== false && r.source !== 'DNS' }).map(l =>
+          el('a', { class: 'verify', href: l.url, target: '_blank', rel: 'noopener noreferrer', 'data-copy': l.copy || '' }, `${l.label} ↗`)) : null)
+      : null,
+    notes.length ? el('ul', { class: 'domain-notes' }, notes.map(n => el('li', { class: n.cls, text: n.text }))) : null);
+}
+
 function renderDomains() {
   const list = $('#domains');
   const results = [...current.domainResults.values()];
-  const row = r => el('li', { class: 'domain' },
-    el('span', { class: 'domain-name', text: r.domain }),
-    el('span', { class: `status status-${r.status}`, text: STATUS_TEXT[r.status] || r.status }),
-    (r.detail || r.status === 'available' || r.status === 'likely')
-      ? el('span', { class: 'domain-meta' },
-        r.detail ? el('span', { text: r.detail }) : null,
-        (r.status === 'available' || r.status === 'likely') ? registrarLinks(r.domain).slice(0, 2).map(l => externalLink(l.url, `${l.label} ↗`)) : null)
-      : null);
+  const row = r => domainRow(r);
   const exact = results.filter(r => r.kind === 'exact');
   const variants = results.filter(r => r.kind === 'variant');
   const freeVariants = variants.filter(r => r.status === 'available' || r.status === 'likely').length;
@@ -264,6 +285,8 @@ function run(values, { updateUrl = true, scroll = true } = {}) {
   $('#legal-name').textContent = analysis.legalName;
   $('#registry-form').textContent = analysis.registryForm || '—';
   $('#handle').textContent = analysis.categories.find(c => c.id === 'social').handle ? `@${analysis.categories.find(c => c.id === 'social').handle}` : '—';
+  const h = analysis.categories.find(c => c.id === 'social').handle;
+  if (h) $('#manual-input').placeholder = `${h}.com, ${h}hq.io, get${h}.co`;
   renderRegistration(analysis);
   renderTrademarks(analysis);
   renderSocial(analysis);
@@ -286,9 +309,145 @@ function run(values, { updateUrl = true, scroll = true } = {}) {
   }, signal).then(() => { if (current === mine) queueRender(); });
 }
 
+/* ------------------------------------------------------------------ */
+/* Domain tabs                                                         */
+/* ------------------------------------------------------------------ */
+function selectTab(tab, { focus = false } = {}) {
+  for (const t of document.querySelectorAll('.tabs [role="tab"]')) {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+  }
+  if (focus) tab.focus();
+  // On click, jump into the empty search box. Keyboard users arrowing through
+  // the tabs keep focus on the tab list (ARIA tabs pattern).
+  else if (tab.id === 'tab-manual' && !$('#manual-input').value) $('#manual-input').focus();
+}
+
+function initTabs() {
+  const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
+  for (const t of tabs) {
+    t.addEventListener('click', () => selectTab(t));
+    t.addEventListener('keydown', e => {
+      const i = tabs.indexOf(t);
+      const next = { ArrowRight: tabs[(i + 1) % tabs.length], ArrowLeft: tabs[(i - 1 + tabs.length) % tabs.length], Home: tabs[0], End: tabs[tabs.length - 1] }[e.key];
+      if (next) { e.preventDefault(); selectTab(next, { focus: true }); }
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Manual domain search                                                */
+/* ------------------------------------------------------------------ */
+let manualController = null;
+
+function manualMessage(text, tone = '') {
+  const m = $('#manual-message');
+  m.textContent = text;
+  if (tone) m.dataset.tone = tone; else delete m.dataset.tone;
+}
+
+async function runManual(text) {
+  manualController?.abort();
+  const controller = new AbortController();
+  manualController = controller;
+  const { signal } = controller;
+  const list = $('#manual-results');
+  const button = $('#manual-submit');
+
+  const { items, invalid, duplicates, truncated } = parseDomainList(text);
+  if (!items.length && !invalid.length) {
+    list.replaceChildren();
+    manualMessage('Enter at least one domain, e.g. naam.com', 'error');
+    $('#manual-input').focus();
+    return;
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    manualMessage('You appear to be offline. Connect to the internet and try again.', 'error');
+    return;
+  }
+
+  const rows = new Map(); // key → result
+  for (const n of items) rows.set(n.domain, { ...n, status: 'pending' });
+  invalid.forEach((n, i) => rows.set(`invalid:${i}`, { ...n, status: 'invalid' }));
+  const render = () => {
+    if (manualController !== controller) return;
+    list.replaceChildren(...[...rows.values()].map(r => domainRow(r, { verifyAlways: true })));
+  };
+  render();
+
+  const extra = [];
+  if (duplicates) extra.push(`${duplicates} duplicate${duplicates > 1 ? 's' : ''} skipped`);
+  if (truncated) extra.push(`only the first ${MAX_DOMAINS} are checked; ${truncated} skipped`);
+  manualMessage(items.length ? `Checking ${items.length} domain${items.length > 1 ? 's' : ''}…${extra.length ? ` (${extra.join('; ')})` : ''}` : 'Nothing valid to check. See the notes below.', items.length ? '' : 'error');
+  if (!items.length) return;
+
+  button.disabled = true;
+  list.setAttribute('aria-busy', 'true');
+  try {
+    // Reject extensions that don't exist in the IANA root zone before any lookup.
+    const toCheck = [];
+    for (const n of items) {
+      const exists = await tldExists(n.tld, signal);
+      if (signal.aborted) return;
+      if (exists === false) {
+        rows.set(n.domain, { ...n, status: 'invalid', error: `.${n.tld} isn't a real extension: it's not in the official IANA list of top-level domains.` });
+        continue;
+      }
+      const rdap = await hasRdap(n.tld, signal);
+      rows.set(n.domain, { ...rows.get(n.domain), rdap });
+      toCheck.push({ ...n, rdap });
+    }
+    render();
+    await checkDomains(toCheck, r => {
+      if (signal.aborted) return;
+      rows.set(r.domain, { ...rows.get(r.domain), ...r, rdap: r.rdap });
+      render();
+    }, signal);
+    if (signal.aborted) return;
+    const vals = [...rows.values()];
+    const free = vals.filter(r => r.status === 'available' || r.status === 'likely').length;
+    const taken = vals.filter(r => r.status === 'taken').length;
+    const unknown = vals.filter(r => r.status === 'unknown').length;
+    const bad = vals.filter(r => r.status === 'invalid').length;
+    const parts = [`${free} available`, `${taken} taken`];
+    if (unknown) parts.push(`${unknown} couldn't be checked`);
+    if (bad) parts.push(`${bad} invalid`);
+    manualMessage(`Done: ${parts.join(', ')}.${extra.length ? ` (${extra.join('; ')})` : ''} Checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
+  } finally {
+    if (manualController === controller) {
+      button.disabled = false;
+      list.removeAttribute('aria-busy');
+    }
+  }
+}
+
+// "Verify on ICANN Lookup" copies the domain first, because ICANN Lookup
+// can't be opened with a domain pre-filled.
+function initCopyLinks() {
+  document.addEventListener('click', async e => {
+    const a = e.target.closest('a[data-copy]');
+    if (!a || !a.dataset.copy) return;
+    const toast = $('#copy-toast');
+    try {
+      await navigator.clipboard.writeText(a.dataset.copy);
+      toast.textContent = `Copied ${a.dataset.copy}. Paste it into ICANN Lookup's search box.`;
+    } catch {
+      toast.textContent = `Search for ${a.dataset.copy} in ICANN Lookup's search box.`;
+    }
+    clearTimeout(initCopyLinks.timer);
+    initCopyLinks.timer = setTimeout(() => { toast.textContent = ''; }, 8000);
+  });
+}
+
 function init() {
   fillSelects();
   loadBootstrap(); // warm the RDAP directory
+  loadTldList();   // and the official TLD list
+  initTabs();
+  initCopyLinks();
+  $('#manual-form').addEventListener('submit', e => { e.preventDefault(); runManual($('#manual-input').value); });
 
   $('#form').addEventListener('submit', e => { e.preventDefault(); run(readForm()); });
   for (const chip of document.querySelectorAll('[data-example]')) {

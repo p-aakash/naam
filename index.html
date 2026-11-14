@@ -110,8 +110,38 @@
         <div class="col">
           <section class="card" aria-labelledby="dom-h">
             <h2 id="dom-h">Domains <span class="badge badge-live">Live</span></h2>
-            <p class="card-note">Checked against the registry (RDAP), or DNS for extensions without RDAP. “Likely” means no DNS records exist; confirm with a registrar.</p>
-            <ul id="domains" class="domains"></ul>
+            <div class="tabs" role="tablist" aria-label="Domain checks">
+              <button type="button" role="tab" id="tab-suggested" aria-selected="true" aria-controls="panel-suggested" tabindex="0">Suggestions</button>
+              <button type="button" role="tab" id="tab-manual" aria-selected="false" aria-controls="panel-manual" tabindex="-1">Search domains</button>
+            </div>
+
+            <div id="panel-suggested" role="tabpanel" aria-labelledby="tab-suggested" tabindex="0">
+              <p class="card-note">Checked against the registry (RDAP), or DNS for extensions without RDAP. “Likely free” means no DNS records exist; verify before buying.</p>
+              <ul id="domains" class="domains"></ul>
+            </div>
+
+            <div id="panel-manual" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
+              <form id="manual-form" class="manual-form" novalidate>
+                <label for="manual-input">Domains to check</label>
+                <div class="manual-row">
+                  <input id="manual-input" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="2000" placeholder="naam.com, naamhq.io" aria-describedby="manual-hint">
+                  <button type="submit" id="manual-submit" class="btn btn-primary">Check</button>
+                </div>
+                <p id="manual-hint" class="hint">Up to 10 at once, separated by commas. Pasted web addresses and emails work too. No extension means .com.</p>
+              </form>
+              <p id="manual-message" class="manual-message" role="status"></p>
+              <ul id="manual-results" class="domains" aria-live="polite"></ul>
+
+              <div class="privacy">
+                <h3>Your searches stay private</h3>
+                <ul>
+                  <li>Lookups go <strong>straight from your browser to the registry</strong> that runs each extension, the same RDAP servers <a href="https://lookup.icann.org/en/lookup" target="_blank" rel="noopener noreferrer">ICANN Lookup</a> uses. Extensions without RDAP fall back to Cloudflare's privacy-first DNS resolver.</li>
+                  <li>Nothing goes to a registrar, a reseller or Naam. There's no server, no logging and no referrer, so nobody who sells domains can see what you searched and register it first (“front-running”).</li>
+                  <li>When you're ready, verify on ICANN Lookup and register promptly with an <a href="https://www.icann.org/en/contracted-parties/accredited-registrars/list-of-accredited-registrars" target="_blank" rel="noopener noreferrer">ICANN-accredited registrar</a>. Avoid searching the same name at several registrars or “domain suggestion” sites first.</li>
+                </ul>
+              </div>
+            </div>
+            <p id="copy-toast" class="copy-toast" role="status" aria-live="polite"></p>
           </section>
 
           <section class="card" aria-labelledby="reg-h">

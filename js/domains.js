@@ -5,19 +5,31 @@
 // 2. DNS-over-HTTPS fallback for TLDs without RDAP (.io, .co, .us, …):
 //    NXDOMAIN means no one has delegated the name, so it is *likely* free.
 //
+// Front-running protection: lookups go straight from the visitor's browser to the
+// registry (the same RDAP servers ICANN Lookup queries) or to a public DNS resolver.
+// They never touch a registrar, a reseller, a "domain suggestion" site or a Naam
+// server, so nobody who sells domains sees what was searched.
+//
 // All endpoints used here send `Access-Control-Allow-Origin: *`, and every request
 // is a "simple" GET with no custom headers, so no CORS preflight is needed.
 
 const BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
+const TLD_LIST_URL = 'https://data.iana.org/TLD/tlds-alpha-by-domain.txt';
+// Cloudflare first: its resolver policy commits to not selling query data and to
+// deleting logs within 25 hours. Google is the fallback.
 const DOH = [
-  name => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=NS`,
   name => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=NS&ct=application/dns-json`,
+  name => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=NS`,
 ];
+export const ICANN_LOOKUP_URL = 'https://lookup.icann.org/en/lookup';
+export const ICANN_REGISTRARS_URL = 'https://www.icann.org/en/contracted-parties/accredited-registrars/list-of-accredited-registrars';
 const TIMEOUT_MS = 9000;
 const CONCURRENCY = 4;
 const CACHE_KEY = 'naam.rdap.bootstrap.v1';
+const TLD_CACHE_KEY = 'naam.tlds.v1';
 
 let bootstrapPromise = null;
+let tldPromise = null;
 
 function storageGet(key) {
   try { return JSON.parse(sessionStorage.getItem(key)); } catch { return null; }
@@ -64,19 +76,65 @@ export function loadBootstrap(signal) {
   return bootstrapPromise;
 }
 
+// Official list of every delegated top-level domain. Resolves to a Set of
+// lowercase TLDs, or an empty Set if it couldn't be loaded (callers then skip
+// the existence check rather than wrongly rejecting a real extension).
+export function loadTldList(signal) {
+  if (tldPromise) return tldPromise;
+  const cached = storageGet(TLD_CACHE_KEY);
+  if (cached && cached.at > Date.now() - 24 * 3600e3 && Array.isArray(cached.tlds)) {
+    tldPromise = Promise.resolve(new Set(cached.tlds));
+    return tldPromise;
+  }
+  tldPromise = fetchWithTimeout(TLD_LIST_URL, signal)
+    .then(r => (r.ok ? r.text() : Promise.reject(new Error(`tlds ${r.status}`))))
+    .then(text => {
+      const tlds = text.split('\n').map(l => l.trim().toLowerCase()).filter(l => l && !l.startsWith('#'));
+      if (tlds.length < 500) throw new Error('tld list looks truncated');
+      storageSet(TLD_CACHE_KEY, { at: Date.now(), tlds });
+      return new Set(tlds);
+    })
+    .catch(() => {
+      tldPromise = null;
+      return new Set();
+    });
+  return tldPromise;
+}
+
+// true / false, or null when the official list couldn't be loaded.
+export async function tldExists(tld, signal) {
+  const set = await loadTldList(signal);
+  if (!set.size) return null;
+  return set.has(String(tld).toLowerCase());
+}
+
+export async function hasRdap(tld, signal) {
+  const map = await loadBootstrap(signal);
+  return Boolean(map[String(tld).toLowerCase()]);
+}
+
+function describeStatus(statuses) {
+  const st = statuses.map(s => s.toLowerCase());
+  if (st.some(s => s.includes('pending delete'))) return { expiring: true, text: 'Pending deletion: may become available within days' };
+  if (st.some(s => s.includes('redemption'))) return { expiring: true, text: 'Expired (redemption period): the owner can still renew it' };
+  if (st.some(s => s.includes('server hold') || s.includes('client hold') || s.includes('inactive'))) return { expiring: false, text: 'Registered but suspended or inactive' };
+  return null;
+}
+
 async function viaRdap(domain, base, signal) {
   const res = await fetchWithTimeout(`${base}domain/${encodeURIComponent(domain)}`, signal);
   if (res.status === 404) return { status: 'available', source: 'RDAP' };
   if (res.ok) {
     let detail = '';
+    let expiring = false;
     try {
       const data = await res.json();
-      const st = (data.status || []).map(s => s.toLowerCase());
-      if (st.some(s => s.includes('redemption') || s.includes('pending delete'))) detail = 'Expiring: may drop soon';
+      const st = describeStatus(data.status || []);
+      if (st) { detail = st.text; expiring = st.expiring; }
       const exp = (data.events || []).find(e => e.eventAction === 'expiration');
-      if (exp?.eventDate) detail = detail || `Registered until ${exp.eventDate.slice(0, 10)}`;
+      if (exp?.eventDate && !detail) detail = `Registered until ${exp.eventDate.slice(0, 10)}`;
     } catch { /* body not needed */ }
-    return { status: 'taken', source: 'RDAP', detail };
+    return { status: 'taken', source: 'RDAP', detail, expiring };
   }
   throw new Error(`rdap ${res.status}`);
 }
@@ -87,13 +145,13 @@ async function viaDoh(domain, signal) {
       const res = await fetchWithTimeout(make(domain), signal);
       if (!res.ok) continue;
       const data = await res.json();
-      if (data.Status === 3) return { status: 'likely', source: 'DNS', detail: 'No DNS delegation found' };
-      if (data.Status === 0) return { status: 'taken', source: 'DNS', detail: 'Has DNS records' };
+      if (data.Status === 3) return { status: 'likely', source: 'DNS', detail: 'No DNS records found; confirm with the registry' };
+      if (data.Status === 0) return { status: 'taken', source: 'DNS', detail: (data.Answer || data.Authority || []).length ? 'Has DNS records' : 'Exists in DNS' };
     } catch (e) {
       if (signal?.aborted) throw e;
     }
   }
-  return { status: 'unknown', source: '', detail: 'Lookup failed' };
+  return { status: 'unknown', source: '', detail: 'Couldn\'t reach a lookup service. Check with the official registry below' };
 }
 
 export async function checkDomain(domain, signal) {
@@ -121,11 +179,17 @@ export async function checkDomains(list, onResult, signal) {
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 }
 
-export function registrarLinks(domain) {
-  const d = encodeURIComponent(domain);
-  return [
-    { label: 'Namecheap', url: `https://www.namecheap.com/domains/registration/results/?domain=${d}` },
-    { label: 'Porkbun', url: `https://porkbun.com/checkout/search?q=${d}` },
-    { label: 'Cloudflare', url: 'https://domains.cloudflare.com/' },
-  ];
+// Neutral, non-commercial places to double-check a result. Deliberately no
+// registrar search links: searching at a registrar before you're ready to buy is
+// how domain front-running happens.
+// - ICANN Lookup queries the same registry RDAP servers we do (but it has no
+//   deep-link support, so the UI copies the domain for the user to paste).
+// - IANA's root-zone page names the official registry for every extension,
+//   including ccTLDs like .io and .co that have no RDAP.
+export function verifyLinks(domain, { rdap = true } = {}) {
+  const tld = domain.split('.').pop();
+  const links = [];
+  if (rdap) links.push({ id: 'icann', label: 'Verify on ICANN Lookup', url: ICANN_LOOKUP_URL, copy: domain });
+  links.push({ id: 'iana', label: `.${tld} registry (IANA)`, url: `https://www.iana.org/domains/root/db/${encodeURIComponent(tld)}.html` });
+  return links;
 }
