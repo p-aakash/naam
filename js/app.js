@@ -3,6 +3,7 @@ import { ENTITY_TYPES, INDUSTRIES, STATES } from './data.js';
 import { analyzeName, scoreDomains, totalScore, grade, CATEGORY_LABELS } from './scoring.js';
 import { checkDomains, verifyLinks, loadBootstrap, loadTldList, tldExists, hasRdap } from './domains.js';
 import { parseDomainList, MAX_DOMAINS } from './domain-input.js';
+import { REGISTRIES, LIVE_STATES, searchState, scoreRegistry, summarize } from './registries.js';
 
 const $ = sel => document.querySelector(sel);
 const el = (tag, attrs = {}, ...children) => {
@@ -87,7 +88,8 @@ let controller = null;  // AbortController for in-flight domain checks
 
 function allCategories() {
   const domainCat = scoreDomains([...current.domainResults.values()]);
-  return [...current.analysis.categories, domainCat];
+  const registryCat = scoreRegistry([...current.registryResults.values()], current.analysis.input);
+  return [...current.analysis.categories, domainCat, registryCat];
 }
 
 function toneFor(score01) {
@@ -117,11 +119,12 @@ function renderSummary() {
   gl.textContent = g.label;
   gl.dataset.tone = g.tone;
   $('#grade-summary').textContent = g.summary;
-  const pending = [...current.domainResults.values()].some(r => r.status === 'pending');
+  const pending = [...current.domainResults.values()].some(r => r.status === 'pending')
+    || [...current.registryResults.values()].some(r => r.pending);
   $('#partial').hidden = !pending;
 
   const bars = $('#bars');
-  bars.replaceChildren(...cats.map(c => {
+  bars.replaceChildren(...cats.filter(c => c.weight > 0).map(c => {
     const pct = c.score === null ? null : Math.round(c.score * 100);
     return el('li', { class: 'bar-row' },
       el('span', { class: 'bar-label' }, el('a', { href: `#cat-${c.id}`, text: c.label })),
@@ -134,8 +137,8 @@ function renderSummary() {
 
 function renderDetails(cats) {
   const wrap = $('#details');
-  wrap.replaceChildren(...cats.filter(c => c.id !== 'domain' || c.checks.length).map(c => {
-    const pct = c.score === null ? '…' : `${Math.round(c.score * 100)}%`;
+  wrap.replaceChildren(...cats.filter(c => (c.id !== 'domain' && c.id !== 'registry') || c.checks.length).map(c => {
+    const pct = c.id === 'registry' ? 'live' : c.score === null ? '…' : `${Math.round(c.score * 100)}%`;
     return el('section', { class: 'card', id: `cat-${c.id}`, 'aria-labelledby': `cat-${c.id}-h` },
       el('div', { class: 'cat-head' },
         el('h2', { id: `cat-${c.id}-h`, text: c.label }),
@@ -194,27 +197,97 @@ function renderDomains() {
   }
 }
 
+const VERDICT = {
+  taken: { text: 'Taken', cls: 'taken' },
+  similar: { text: 'Similar names', cls: 'warn' },
+  clear: { text: 'No conflict found', cls: 'available' },
+  error: { text: "Couldn't check", cls: 'unknown' },
+  pending: { text: 'Checking…', cls: 'pending' },
+  manual: { text: 'Check manually', cls: 'info' },
+};
+const fmtDate = iso => {
+  if (!iso) return '';
+  const d = new Date(`${iso}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+};
+const yearOf = iso => (iso && /^\d{4}/.test(iso) ? iso.slice(0, 4) : '');
+
+// Order: formation state, operating state, then the remaining live states.
+function registryOrder(input) {
+  return [...new Set([input.state, input.opState, ...LIVE_STATES].filter(Boolean))];
+}
+
+function matchItem(m) {
+  const since = yearOf(m.date);
+  return el('li', { class: `reg-match reg-${m.status}` },
+    el('span', { class: 'reg-match-name', text: m.name }),
+    el('span', { class: 'reg-match-meta', text: [m.type, m.statusText, since && since !== '0001' ? `since ${since}` : ''].filter(Boolean).join(' · ') }));
+}
+
+function registryRow(code, a) {
+  const s = STATES[code];
+  const live = REGISTRIES[code];
+  const role = code === a.input.state ? 'Formation state' : code === a.input.opState ? 'Operating state' : '';
+  if (!live) {
+    return el('li', { class: 'reg-row' },
+      el('div', { class: 'reg-row-head' },
+        el('span', { class: 'reg-state' }, s.name, role ? el('small', { text: role }) : null),
+        el('span', { class: `status status-${VERDICT.manual.cls}`, text: VERDICT.manual.text })),
+      el('p', { class: 'reg-line' }, `${s.name} doesn't publish open data, so search the official site for “${a.parsed.core}” (leave off LLC, Inc. and “The”). `,
+        externalLink(s.search, `Open ${s.name} search ↗`)),
+      s.reservation ? el('p', { class: 'reg-line', text: s.reservation }) : null);
+  }
+  const r = current.registryResults.get(code) || { pending: true };
+  const key = r.pending ? 'pending' : !r.ok ? 'error' : r.summary.verdict;
+  const v = VERDICT[key];
+  let line = '';
+  if (r.pending) line = `Searching the ${live.name} registry…`;
+  else if (!r.ok) line = `${r.error} Use the official search instead.`;
+  else if (key === 'taken') {
+    const m = r.summary.exactBlocking[0];
+    const more = r.summary.exactBlocking.length - 1;
+    line = `${m.name}: ${m.type}, ${m.statusText.toLowerCase()}${yearOf(m.date) ? ` since ${yearOf(m.date)}` : ''}.${more ? ` Plus ${more} more with the same name.` : ''} Not available for any entity type.`;
+  } else if (key === 'similar') {
+    const m = r.summary.nearBlocking[0] || r.summary.exactOther[0];
+    line = r.summary.nearBlocking.length
+      ? `Close match: ${m.name} (${m.type}, ${m.statusText.toLowerCase()}). ${live.name} may reject your name as too similar.`
+      : `Used before: ${m.name} (${m.statusText.toLowerCase()}). Usually available again, but some states protect names of recently dissolved entities.`;
+  } else line = 'No identical or confusingly similar name on the registry. Looks available for any entity type.';
+
+  const groups = !r.ok || r.pending ? [] : [
+    ['Same name', r.summary.exactBlocking],
+    ['Very similar', r.summary.nearBlocking],
+    ['Same name, inactive or not on the entity registry', r.summary.exactOther],
+    [`Other names starting the same way${r.summary.related.length > 15 ? ` (first 15 of ${r.summary.related.length}${r.truncated ? '+' : ''})` : ''}`, r.summary.related.slice(0, 15)],
+  ].filter(([, list]) => list.length);
+
+  return el('li', { class: 'reg-row', 'data-state': code, 'data-verdict': key },
+    el('div', { class: 'reg-row-head' },
+      el('span', { class: 'reg-state' }, s.name, role ? el('small', { text: role }) : null),
+      el('span', { class: `status status-${v.cls}`, text: v.text })),
+    el('p', { class: 'reg-line', text: line }),
+    groups.length ? el('details', { class: 'reg-details' },
+      el('summary', { text: `Show ${groups.reduce((n, [, l]) => n + l.length, 0)} matching record${groups.reduce((n, [, l]) => n + l.length, 0) === 1 ? '' : 's'}` }),
+      groups.map(([title, list]) => el('div', { class: 'reg-group' }, el('h4', { text: title }), el('ul', { class: 'reg-matches' }, list.map(matchItem))))) : null,
+    el('p', { class: 'reg-source' },
+      `Source: ${live.dataset}`, r.updated ? `, updated ${fmtDate(r.updated)}` : '', '. ',
+      externalLink(s.search, 'Official search ↗')));
+}
+
 function renderRegistration(a) {
-  const { state, opState } = a.input;
   const box = $('#registration');
-  const block = code => {
-    const s = STATES[code];
-    return el('div', { class: 'reg-block' },
-      el('h3', { text: s.name }),
-      el('a', { class: 'reg-link', href: s.search, target: '_blank', rel: 'noopener noreferrer' }, el('span', {}, `Search ${s.name} business names`, el('br'), el('small', { text: new URL(s.search).hostname })), el('span', { class: 'arrow', text: '↗' })),
-      s.tip ? el('p', { text: s.tip }) : null,
-      s.reservation ? el('p', { text: s.reservation }) : null,
-      el('p', { text: `Search for “${a.registryForm || a.parsed.core}” without the suffix. Registries ignore suffixes, punctuation and “The”.` }));
-  };
+  const rows = registryOrder(a.input).map(code => registryRow(code, a));
   const sorted = Object.entries(STATES).sort((x, y) => x[1].name.localeCompare(y[1].name));
-  box.replaceChildren(...[
-    el('p', { class: 'card-note', text: 'No US state offers an open API to websites, so check availability on the official search. Most states let you reserve a name for 60–120 days for a small fee.' }),
-    block(state),
-    opState && opState !== state ? block(opState) : null,
+  const liveNames = LIVE_STATES.map(c => STATES[c].name).join(', ');
+  box.replaceChildren(
+    el('p', { class: 'card-note' },
+      `Live search of official state registries (${liveNames}), straight from your browser. States compare names regardless of LLC, Inc. or Corp., so each result applies to every entity type. `,
+      `Compared as “${a.registryForm || a.parsed.core}”, the way registries see it.`),
+    el('ul', { class: 'reg-rows' }, rows),
+    el('p', { class: 'card-note reg-caveat', text: 'No conflict found ≠ approved: the state decides when you file. Name reservations, filings still being processed, and county-level DBAs may not appear. Reserve the name (usually 60–120 days, small fee) if you aren\'t filing right away.' }),
     el('details', { class: 'all-states' },
-      el('summary', { text: 'All 50 states + DC' }),
-      el('ul', { class: 'state-grid' }, sorted.map(([, s]) => el('li', {}, externalLink(s.search, s.name))))),
-  ].filter(Boolean));
+      el('summary', { text: 'Official name search for all 50 states + DC' }),
+      el('ul', { class: 'state-grid' }, sorted.map(([code, st]) => el('li', {}, externalLink(st.search, st.name), REGISTRIES[code] ? el('span', { class: 'live-dot', title: 'Checked live above', text: ' • live' }) : null)))));
 }
 
 function renderTrademarks(a) {
@@ -239,8 +312,9 @@ function renderSocial(a) {
 
 function renderNextSteps(a) {
   const st = STATES[a.input.state];
+  const liveNote = REGISTRIES[a.input.state] ? ' (Naam checked its open data above. Confirm on the official search, which also shows filings from the last few days)' : '';
   const steps = [
-    `Search ${st.name}'s business registry for “${a.registryForm || a.parsed.core}”${a.input.opState && a.input.opState !== a.input.state ? ` and repeat in ${STATES[a.input.opState].name}` : ''}.`,
+    `Search ${st.name}'s business registry for “${a.registryForm || a.parsed.core}”${liveNote}${a.input.opState && a.input.opState !== a.input.state ? `, and repeat in ${STATES[a.input.opState].name}` : ''}.`,
     'Run a USPTO trademark search, including similar spellings and sound-alikes in your class of goods or services.',
     'Register the best available domain now. It costs about $10–20 a year and someone else could take it.',
     'Claim the handle on the platforms you\'ll use, even if you won\'t post yet.',
@@ -258,7 +332,7 @@ let renderQueued = false;
 function queueRender() {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => { renderQueued = false; renderSummary(); renderDomains(); });
+  requestAnimationFrame(() => { renderQueued = false; renderSummary(); renderDomains(); renderRegistration(current.analysis); });
 }
 
 function run(values, { updateUrl = true, scroll = true } = {}) {
@@ -280,7 +354,11 @@ function run(values, { updateUrl = true, scroll = true } = {}) {
   controller = new AbortController();
 
   const analysis = analyzeName(values);
-  current = { analysis, domainResults: new Map(analysis.domains.map(d => [d.domain, { ...d, status: 'pending' }])) };
+  current = {
+    analysis,
+    domainResults: new Map(analysis.domains.map(d => [d.domain, { ...d, status: 'pending' }])),
+    registryResults: new Map(LIVE_STATES.map(code => [code, { state: code, pending: true }])),
+  };
 
   $('#legal-name').textContent = analysis.legalName;
   $('#registry-form').textContent = analysis.registryForm || '—';
@@ -307,6 +385,19 @@ function run(values, { updateUrl = true, scroll = true } = {}) {
     current.domainResults.set(r.domain, r);
     queueRender();
   }, signal).then(() => { if (current === mine) queueRender(); });
+
+  // Live state registries: all in parallel, each row fills in as it answers.
+  if (analysis.parsed.core) {
+    for (const code of LIVE_STATES) {
+      searchState(code, analysis.parsed.core, signal).then(r => {
+        if (current !== mine) return;
+        current.registryResults.set(code, r);
+        queueRender();
+      }).catch(() => { /* aborted by a newer search */ });
+    }
+  } else {
+    for (const code of LIVE_STATES) current.registryResults.set(code, { state: code, ok: false, error: 'There\'s no name to search for.', matches: [], summary: summarize([]) });
+  }
 }
 
 /* ------------------------------------------------------------------ */

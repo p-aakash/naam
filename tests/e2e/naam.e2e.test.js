@@ -17,7 +17,20 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 
 // ---- fake internet -------------------------------------------------------
 const TAKEN = new Set(['taken.com', 'naamlabs.com', 'taken.io']);
-const ALLOWED_HOSTS = new Set(['127.0.0.1', 'data.iana.org', 'rdap.mock', 'cloudflare-dns.com', 'dns.google']);
+const REGISTRY_HOSTS = ['data.ny.gov', 'data.ct.gov', 'data.texas.gov', 'data.colorado.gov', 'data.oregon.gov'];
+const ALLOWED_HOSTS = new Set(['127.0.0.1', 'data.iana.org', 'rdap.mock', 'cloudflare-dns.com', 'dns.google', ...REGISTRY_HOSTS]);
+// Fake state registries (Socrata). Field names match the real datasets.
+const REGISTRY_ROWS = {
+  'data.ny.gov': { field: 'current_entity_name', rows: [
+    { dos_id: '1', current_entity_name: 'NAAM LABS INC.', entity_type: 'DOMESTIC BUSINESS CORPORATION', initial_dos_filing_date: '2020-03-13T00:00:00.000' },
+    { dos_id: '2', current_entity_name: 'NAAM CONSTRUCTION CORP.', entity_type: 'DOMESTIC BUSINESS CORPORATION', initial_dos_filing_date: '2014-05-09T00:00:00.000' },
+  ] },
+  'data.ct.gov': { field: 'name', rows: [{ accountnumber: '10', name: 'Naam Lab LLC', business_type: 'LLC', status: 'Active', citizenship: 'Domestic', date_registration: '2019-01-01T00:00:00.000' }] },
+  'data.texas.gov': { field: 'taxpayer_name', rows: [] },
+  'data.colorado.gov': { field: 'entityname', rows: [] },
+  'data.oregon.gov': { field: 'business_name', rows: [] },
+};
+let registryDown = '';
 const TLDS = ['COM', 'NET', 'ORG', 'IO', 'CO', 'AI', 'APP', 'DEV', 'TECH', 'DE', 'UK', 'US', 'XN--P1AI', ...Array.from({ length: 600 }, (_, i) => `FILLER${i}`)];
 
 let server, base, browser;
@@ -69,6 +82,13 @@ async function openPage(opts = {}) {
       if (name === 'expiring.com') return json({ ldhName: name, status: ['pending delete'] });
       return TAKEN.has(name) ? json({ ldhName: name }) : json({ errorCode: 404 }, 404);
     }
+    if (REGISTRY_ROWS[url.hostname]) {
+      if (url.hostname === registryDown) return route.fulfill({ status: 503, headers: { 'access-control-allow-origin': '*' }, body: '' });
+      if (url.pathname.startsWith('/api/views/')) return json({ rowsUpdatedAt: 1794845356 });
+      const { field, rows } = REGISTRY_ROWS[url.hostname];
+      const prefixes = [...(url.searchParams.get('$where') || '').matchAll(/'([^']*)'/g)].map(m => m[1]);
+      return json(rows.filter(r => prefixes.some(p => r[field].toUpperCase().startsWith(p))));
+    }
     if (url.hostname === 'cloudflare-dns.com' || url.hostname === 'dns.google') {
       const headers = await route.request().allHeaders();
       // Mirror the real Cloudflare API: 400 without the dns-json Accept header.
@@ -82,11 +102,11 @@ async function openPage(opts = {}) {
   page = await ctx.newPage();
   page.on('pageerror', e => pageErrors.push(e.message));
 }
-beforeEach(() => { rdapDelayMs = 0; });
+beforeEach(() => { rdapDelayMs = 0; registryDown = ''; });
 afterEach(async () => { await ctx?.close(); });
 
-async function analyse(name = 'Naam Labs') {
-  await page.goto(`${base}?n=${encodeURIComponent(name)}&i=tech&e=llc&s=DE`);
+async function analyse(name = 'Naam Labs', { state = 'DE', opState = '' } = {}) {
+  await page.goto(`${base}?n=${encodeURIComponent(name)}&i=tech&e=llc&s=${state}${opState ? `&o=${opState}` : ''}`);
   await page.waitForSelector('#results:not([hidden])');
   await page.waitForFunction(() => document.querySelector('#partial').hidden === true, null, { timeout: 15000 });
 }
@@ -243,4 +263,63 @@ test('phone layout: no horizontal scrolling with long manual results', async () 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   assert.equal(overflow, false);
   assert.match(await rowFor('naam.us').textContent(), /US nexus/);
+});
+
+// ---- state availability ------------------------------------------------------
+const regRow = code => page.locator(`#registration li.reg-row[data-state="${code}"]`);
+
+test('state availability: live verdicts for the five open-data states', async () => {
+  await openPage();
+  await analyse('Naam Labs LLC', { state: 'DE' });
+  // Delaware isn't live: shown first as a manual check with the official link
+  const first = page.locator('#registration li.reg-row').first();
+  assert.match(await first.textContent(), /Delaware/);
+  assert.match(await first.textContent(), /Check manually/);
+  assert.match(await first.locator('a').getAttribute('href'), /delaware\.gov/);
+  assert.equal(await regRow('NY').getAttribute('data-verdict'), 'taken');
+  assert.match(await regRow('NY').textContent(), /NAAM LABS INC\..*Corporation/);
+  assert.match(await regRow('NY').textContent(), /Not available for any entity type/);
+  assert.equal(await regRow('CT').getAttribute('data-verdict'), 'similar');   // "Naam Lab LLC"
+  for (const code of ['TX', 'CO', 'OR']) assert.equal(await regRow(code).getAttribute('data-verdict'), 'clear', code);
+  assert.match(await regRow('TX').textContent(), /updated/);
+  // match details expand
+  await regRow('NY').locator('summary').click();
+  assert.match(await regRow('NY').locator('.reg-details').textContent(), /NAAM CONSTRUCTION CORP\./);
+  // Delaware formation: NY conflict is informational, not a blocker
+  assert.notEqual(await page.textContent('#score-label'), 'Blocked');
+  assert.deepEqual(pageErrors, []);
+});
+
+test('state availability: conflict in the formation state blocks the name', async () => {
+  await openPage();
+  await analyse('Naam Labs', { state: 'NY' });
+  const first = page.locator('#registration li.reg-row').first();
+  assert.equal(await first.getAttribute('data-state'), 'NY');
+  assert.match(await first.textContent(), /Formation state/);
+  assert.equal(await page.textContent('#score-label'), 'Blocked');
+  assert.match(await page.textContent('#details'), /Already registered in New York/);
+});
+
+test('state availability: operating-state conflict needs a DBA', async () => {
+  await openPage();
+  await analyse('Naam Labs', { state: 'DE', opState: 'NY' });
+  assert.match(await page.locator('#registration li.reg-row').nth(1).textContent(), /Operating state/);
+  assert.notEqual(await page.textContent('#score-label'), 'Blocked');
+  assert.match(await page.textContent('#details'), /DBA/);
+});
+
+test('state availability: a registry outage shows "Couldn\'t check", never "available"', async () => {
+  await openPage();
+  registryDown = 'data.colorado.gov';
+  await analyse('Zentrova', { state: 'CO' });
+  assert.equal(await regRow('CO').getAttribute('data-verdict'), 'error');
+  assert.match(await regRow('CO').textContent(), /Couldn't check/);
+  assert.match(await regRow('CO').locator('a').last().getAttribute('href'), /sos\.state\.co\.us/);
+});
+
+test('state availability: phone layout stays within the screen', async () => {
+  await openPage({ ...devices['iPhone 13'] });
+  await analyse('Naam Labs', { state: 'NY', opState: 'CA' });
+  await regRow('NY').locator('summary').click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
 });

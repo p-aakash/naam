@@ -321,3 +321,23 @@ details.all-states summary { cursor: pointer; font-weight: 600; color: var(--acc
 .privacy ul { margin: 8px 0 0; padding-left: 1.1rem; display: grid; gap: 6px; font-size: .86rem; color: var(--text); }
 .copy-toast { margin: 10px 0 0; font-size: .85rem; color: var(--pass); min-height: 1.2em; }
 .copy-toast:empty { margin: 0; min-height: 0; }
+
+/* State availability */
+.reg-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.reg-row { padding: 12px 14px; border-radius: var(--radius-sm); background: var(--surface-2); min-width: 0; }
+.reg-row-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.reg-state { font-weight: 600; }
+.reg-state small { display: block; font-weight: 500; font-size: .75rem; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+.reg-line { margin: 6px 0 0; font-size: .9rem; overflow-wrap: anywhere; }
+.reg-source { margin: 6px 0 0; font-size: .78rem; color: var(--muted); }
+.reg-source a { color: var(--muted); }
+.reg-details { margin-top: 8px; }
+.reg-details summary { cursor: pointer; font-size: .85rem; font-weight: 600; color: var(--accent); }
+.reg-group h4 { margin: 10px 0 4px; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.reg-matches { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.reg-match { display: grid; gap: 1px; padding: 6px 8px; border-radius: 8px; background: var(--surface); font-size: .85rem; }
+.reg-match-name { font-weight: 600; overflow-wrap: anywhere; }
+.reg-match-meta { color: var(--muted); font-size: .78rem; }
+.reg-match.reg-inactive .reg-match-name, .reg-match.reg-taxonly .reg-match-name { color: var(--muted); font-weight: 500; }
+.reg-caveat { margin-top: 12px; }
+.live-dot { color: var(--pass); font-size: .78rem; font-weight: 600; }
