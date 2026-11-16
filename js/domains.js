@@ -11,15 +11,18 @@
 // server, so nobody who sells domains sees what was searched.
 //
 // All endpoints used here send `Access-Control-Allow-Origin: *`, and every request
-// is a "simple" GET with no custom headers, so no CORS preflight is needed.
+// is a "simple" GET (only the CORS-safelisted Accept header), so no preflight is needed.
 
 const BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
 const TLD_LIST_URL = 'https://data.iana.org/TLD/tlds-alpha-by-domain.txt';
 // Cloudflare first: its resolver policy commits to not selling query data and to
 // deleting logs within 25 hours. Google is the fallback.
+// Cloudflare's JSON API requires `Accept: application/dns-json` (it answers 400
+// without it). Accept is a CORS-safelisted header, so this stays a simple
+// request with no preflight. Google's JSON API needs no header.
 const DOH = [
-  name => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=NS&ct=application/dns-json`,
-  name => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=NS`,
+  { url: name => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=NS`, headers: { accept: 'application/dns-json' } },
+  { url: name => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=NS` },
 ];
 export const ICANN_LOOKUP_URL = 'https://lookup.icann.org/en/lookup';
 export const ICANN_REGISTRARS_URL = 'https://www.icann.org/en/contracted-parties/accredited-registrars/list-of-accredited-registrars';
@@ -38,13 +41,15 @@ function storageSet(key, value) {
   try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode etc. */ }
 }
 
-async function fetchWithTimeout(url, signal) {
+async function fetchWithTimeout(url, signal, headers) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   const onAbort = () => ctrl.abort();
   signal?.addEventListener('abort', onAbort);
   try {
-    return await fetch(url, { signal: ctrl.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+    const opts = { signal: ctrl.signal, credentials: 'omit', referrerPolicy: 'no-referrer' };
+    if (headers) opts.headers = headers;
+    return await fetch(url, opts);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
@@ -140,9 +145,9 @@ async function viaRdap(domain, base, signal) {
 }
 
 async function viaDoh(domain, signal) {
-  for (const make of DOH) {
+  for (const resolver of DOH) {
     try {
-      const res = await fetchWithTimeout(make(domain), signal);
+      const res = await fetchWithTimeout(resolver.url(domain), signal, resolver.headers);
       if (!res.ok) continue;
       const data = await res.json();
       if (data.Status === 3) return { status: 'likely', source: 'DNS', detail: 'No DNS records found; confirm with the registry' };

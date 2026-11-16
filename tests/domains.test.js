@@ -26,6 +26,8 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (u.hostname === 'cloudflare-dns.com') {
     if (!cloudflareUp) throw new TypeError('network error');
+    // Like the real service: JSON only with the dns-json Accept header, else 400.
+    if (opts.headers?.accept !== 'application/dns-json') return new Response('', { status: 400 });
     const name = u.searchParams.get('name');
     return Response.json({ Status: REGISTERED.has(name) ? 0 : 3, Answer: REGISTERED.has(name) ? [{}] : undefined });
   }
@@ -79,11 +81,20 @@ test('RDAP errors (rate limits) fall back to DNS instead of guessing', async () 
   assert.equal(r.source, 'DNS');
 });
 
-test('privacy: no custom headers, no credentials, no referrer, never a registrar', async () => {
+test('Cloudflare is queried with the JSON Accept header and answers (no silent fallback)', async () => {
+  const r = await checkDomain('free.io');
+  assert.equal(r.status, 'likely');
+  const cf = calls.find(c => /cloudflare-dns\.com/.test(c.url));
+  assert.equal(cf.opts.headers.accept, 'application/dns-json');
+  assert.doesNotMatch(cf.url, /[?&]ct=/);
+});
+
+test('privacy: only CORS-safelisted headers, no credentials, no referrer, never a registrar', async () => {
   await checkDomains(['x1.com', 'x2.io', 'x3.ai'].map(domain => ({ domain })), () => {});
   assert.ok(calls.length > 0);
   for (const c of calls) {
-    assert.ok(!c.opts.headers, 'no custom headers (keeps requests CORS-simple)');
+    const names = Object.keys(c.opts.headers || {}).map(h => h.toLowerCase());
+    assert.ok(names.every(h => h === 'accept'), `only Accept allowed, got ${names}`);
     assert.equal(c.opts.credentials, 'omit');
     assert.equal(c.opts.referrerPolicy, 'no-referrer');
     const host = new URL(c.url).hostname;

@@ -45,12 +45,13 @@ after(async () => {
   await new Promise(r => server.close(r));
 });
 
-let ctx, page, hosts, pageErrors;
+let ctx, page, hosts, pageErrors, dnsHits = [];
 async function openPage(opts = {}) {
   ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, ...opts });
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base.slice(0, -1) });
   hosts = new Set();
   pageErrors = [];
+  dnsHits = [];
   await ctx.route('**/*', async route => {
     const url = new URL(route.request().url());
     hosts.add(url.hostname);
@@ -69,6 +70,10 @@ async function openPage(opts = {}) {
       return TAKEN.has(name) ? json({ ldhName: name }) : json({ errorCode: 404 }, 404);
     }
     if (url.hostname === 'cloudflare-dns.com' || url.hostname === 'dns.google') {
+      const headers = await route.request().allHeaders();
+      // Mirror the real Cloudflare API: 400 without the dns-json Accept header.
+      if (url.hostname === 'cloudflare-dns.com' && headers.accept !== 'application/dns-json') return json({ error: 'bad request' }, 400);
+      dnsHits.push(url.hostname);
       const name = url.searchParams.get('name');
       return json({ Status: TAKEN.has(name) ? 0 : 3 });
     }
@@ -134,6 +139,7 @@ test('manual search: mixed valid, invalid, duplicate and international input', a
   assert.equal(await statusOf('naam.com'), 'Available');
   assert.equal(await statusOf('taken.com'), 'Taken');
   assert.equal(await statusOf('naam.io'), 'Likely free');                 // no RDAP → DNS
+  assert.ok(dnsHits.length && dnsHits.every(h => h === 'cloudflare-dns.com'), `DNS answered by Cloudflare, not a fallback: ${dnsHits}`);
   assert.match(await rowFor('naam.io').textContent(), /via DNS/);
   assert.match(await rowFor('naam.com').textContent(), /via Registry \(RDAP\)/);
   assert.equal(await statusOf('foo_bar.com'), 'Invalid');
